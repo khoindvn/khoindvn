@@ -649,6 +649,10 @@ async function handlePurchaseSubmit(e) {
           </div>
         `;
       }
+      
+      // Gọi fetchDevices để cập nhật danh sách thiết bị ngay lập tức
+      await fetchDevices();
+      
       setTimeout(() => {
         if (elements.purchaseMessage) elements.purchaseMessage.innerHTML = '';
         switchTab('my-devices');

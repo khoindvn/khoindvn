@@ -1936,7 +1936,6 @@ export default {
           const proxyReq = new Request(targetUrl + urlParams, {
             method: request.method,
             headers: {
-              'Content-Type': 'application/json',
               'Authorization': `Bearer ${config.muacertToken}`
             },
             body: request.method !== 'GET' && request.method !== 'HEAD' ? await request.text() : null
