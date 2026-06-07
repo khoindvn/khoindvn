@@ -120,6 +120,14 @@ async function initApp() {
   const udid = urlParams.get('udid');
   const devName = urlParams.get('name');
 
+  // Cập nhật link lấy UDID tự động nếu có cấu hình từ admin
+  try {
+    const res = await fetch(API_BASE + '/api/prices');
+    const d = await res.json();
+  } catch (e) {
+    console.error('Failed to load prices:', e);
+  }
+
   // Kiểm tra kết quả nạp tiền từ Pay2S Redirect
   const depositStatus = urlParams.get('depositStatus');
   if (depositStatus) {
@@ -524,7 +532,7 @@ function startDepositPolling() {
 
   const initialBalance = state.user.balance;
   let attempts = 0;
-  const maxAttempts = 60; // 3 phút
+  const maxAttempts = 30; // 5 phút (10s/lần)
 
   state.depositPollInterval = setInterval(async () => {
     attempts++;
@@ -542,7 +550,7 @@ function startDepositPolling() {
       clearInterval(state.depositPollInterval);
       state.depositPollInterval = null;
     }
-  }, 3000);
+  }, 10000); // Tăng từ 3s lên 10s để giảm 70% request
 }
 
 // ==========================================
@@ -924,6 +932,8 @@ async function downloadCert(deviceId, udid, name) {
       headers: { 'Authorization': `Bearer ${state.user.token}` }
     });
     if (!res.ok) {
+      const errorText = await res.text();
+      console.error('Lỗi tải cert:', res.status, errorText);
       alert('Không thể tải chứng chỉ. Vui lòng thử lại sau.');
       return;
     }
@@ -931,7 +941,7 @@ async function downloadCert(deviceId, udid, name) {
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${name || 'cert'}_${udid}.zip`;
+    a.download = `cert_${udid}.zip`; // Đổi tên file tải về cho ngắn gọn
     document.body.appendChild(a);
     a.click();
     a.remove();

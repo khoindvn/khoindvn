@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS devices (
   id TEXT PRIMARY KEY,
   username TEXT NOT NULL,
-  udid TEXT NOT NULL UNIQUE,
+  udid TEXT NOT NULL,
   name TEXT DEFAULT 'iOS Device',
   model TEXT DEFAULT 'iPhone',
   package_id INTEGER NOT NULL,

@@ -30,6 +30,10 @@ let elements = {};
 
 // Tab details mapping
 const tabDetails = {
+  stats: {
+    title: 'Thống kê Doanh thu',
+    desc: 'Xem tổng quan doanh thu, số lượng thiết bị, thành viên và biểu đồ doanh thu 30 ngày gần nhất.'
+  },
   dashboard: {
     title: 'Quản lý thiết bị',
     desc: 'Quản lý danh sách thiết bị khách hàng liên kết cert và thực hiện check trạng thái unban.'
@@ -49,6 +53,10 @@ const tabDetails = {
   'backup-config': {
     title: 'Sao lưu & Khôi phục',
     desc: 'Xuất toàn bộ dữ liệu hệ thống ra file JSON hoặc khôi phục dữ liệu từ file đã sao lưu.'
+  },
+  'logs-config': {
+    title: 'Nhật ký Hệ thống',
+    desc: 'Theo dõi các thao tác nạp tiền, mua cert, lỗi hệ thống và dọn dẹp log cũ.'
   }
 };
 
@@ -71,8 +79,10 @@ async function initAdmin() {
     logoutBtn: document.getElementById('logout-btn'),
 
     // Stats
-    statDevicesCount: document.getElementById('stat-devices-count'),
-    statBalance: document.getElementById('stat-balance'),
+    statTotalRevenue: document.getElementById('stat-total-revenue'),
+    statTotalDevices: document.getElementById('stat-total-devices'),
+    statTotalUsers: document.getElementById('stat-total-users'),
+    revenueChartCanvas: document.getElementById('revenueChart'),
 
     // Devices Management
     devicesTbody: document.getElementById('devices-list-tbody'),
@@ -151,7 +161,15 @@ async function initAdmin() {
     selectBackupBtn: document.getElementById('select-backup-btn'),
     selectedFileInfo: document.getElementById('selected-file-info'),
     selectedFileName: document.getElementById('selected-file-name'),
-    importBackupBtn: document.getElementById('import-backup-btn')
+    importBackupBtn: document.getElementById('import-backup-btn'),
+
+    // Logs
+    refreshLogsBtn: document.getElementById('refresh-logs-btn'),
+    clearLogsBtn: document.getElementById('clear-logs-btn'),
+    logsTbody: document.getElementById('logs-list-tbody'),
+    logsPageInfo: document.getElementById('logs-page-info'),
+    btnLogsPrev: document.getElementById('btn-logs-prev'),
+    btnLogsNext: document.getElementById('btn-logs-next')
   };
 
   try {
@@ -162,8 +180,86 @@ async function initAdmin() {
     loadConfigurations();
     loadDevicesList(1);
     setupEventListeners();
+    loadStats();
   } catch (error) {
     console.error("Initialization error in admin.js:", error);
+  }
+}
+
+let revenueChartInstance = null;
+
+async function loadStats() {
+  try {
+    const res = await fetch(API_BASE + '/api/admin/stats', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    const data = await res.json();
+    if (data.success) {
+      const { overview, chart } = data.data;
+      
+      if (elements.statTotalRevenue) elements.statTotalRevenue.innerText = (overview.revenue || 0).toLocaleString() + 'đ';
+      if (elements.statTotalDevices) elements.statTotalDevices.innerText = overview.devices || 0;
+      if (elements.statTotalUsers) elements.statTotalUsers.innerText = overview.users || 0;
+
+      if (elements.revenueChartCanvas && chart && chart.length > 0) {
+        const labels = chart.map(item => item.date);
+        const depositData = chart.map(item => item.total_deposit);
+        const purchaseData = chart.map(item => item.total_purchase);
+
+        if (revenueChartInstance) {
+          revenueChartInstance.destroy();
+        }
+
+        revenueChartInstance = new Chart(elements.revenueChartCanvas, {
+          type: 'line',
+          data: {
+            labels: labels,
+            datasets: [
+              {
+                label: 'Tiền nạp vào (VNĐ)',
+                data: depositData,
+                borderColor: '#10B981',
+                backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                borderWidth: 2,
+                fill: true,
+                tension: 0.4
+              },
+              {
+                label: 'Tiền mua Cert (VNĐ)',
+                data: purchaseData,
+                borderColor: '#4F46E5',
+                backgroundColor: 'rgba(79, 70, 229, 0.1)',
+                borderWidth: 2,
+                fill: true,
+                tension: 0.4
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                labels: { color: '#9ca3af' }
+              }
+            },
+            scales: {
+              y: {
+                beginAtZero: true,
+                grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                ticks: { color: '#9ca3af' }
+              },
+              x: {
+                grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                ticks: { color: '#9ca3af' }
+              }
+            }
+          }
+        });
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load stats:', e);
   }
 }
 
@@ -278,6 +374,7 @@ async function loadConfigurations() {
     if (elements.adminUsername) elements.adminUsername.value = config.adminUsername || 'admin';
     if (elements.adminPassword) elements.adminPassword.value = ''; // security empty
     if (elements.supportUrl) elements.supportUrl.value = config.supportUrl || 'https://t.me/ipamaster';
+    if (elements.udidUrl) elements.udidUrl.value = config.udidUrl || '/udid';
 
     // Price markups autofill
     const prices = config.sellingPrices || { 1: 180000, 2: 120000, 3: 70000 };
@@ -539,7 +636,7 @@ function renderDevicesList(devices) {
       <td style="font-size: 0.8rem; color: var(--text-muted);">${addedDate}</td>
       <td>
         <div style="display: flex; gap: 6px;">
-          <a href="${API_BASE}/api/devices/${device.id}/provision?udid=${encodeURIComponent(device.attributes.udid)}" class="btn btn-secondary" style="padding: 4px 8px; font-size: 0.75rem; text-decoration: none;">Certs Zip</a>
+          <button class="btn btn-secondary" onclick="downloadAdminCert('${device.id}', '${device.attributes.udid}', '${safeName}')" style="padding: 4px 8px; font-size: 0.75rem;">Certs Zip</button>
           <button class="btn btn-secondary" onclick="deleteDevice('${device.id}')" style="padding: 4px 8px; font-size: 0.75rem; color: var(--danger); border-color: rgba(239, 68, 68, 0.1);">Xóa</button>
         </div>
       </td>
@@ -562,6 +659,32 @@ window.checkStatusQuick = async (id) => {
     }
   } catch (e) {
     alert('Lỗi kiểm tra mạng: ' + e.message);
+  }
+};
+
+window.downloadAdminCert = async (deviceId, udid, name) => {
+  try {
+    const res = await fetch(API_BASE + `/api/devices/${deviceId}/provision?udid=${encodeURIComponent(udid)}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error('Lỗi tải cert admin:', res.status, errorText);
+      alert('Không thể tải chứng chỉ. Vui lòng thử lại sau.');
+      return;
+    }
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${name || 'cert'}_${udid}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  } catch (error) {
+    console.error('Lỗi tải cert admin:', error);
+    alert('Lỗi mạng khi tải chứng chỉ.');
   }
 };
 
@@ -805,6 +928,24 @@ function setupEventListeners() {
   }
   if (elements.importBackupBtn) {
     elements.importBackupBtn.addEventListener('click', handleImportBackup);
+  }
+
+  // Logs
+  if (elements.refreshLogsBtn) {
+    elements.refreshLogsBtn.addEventListener('click', () => loadLogsList(1));
+  }
+  if (elements.clearLogsBtn) {
+    elements.clearLogsBtn.addEventListener('click', handleClearLogs);
+  }
+  if (elements.btnLogsPrev) {
+    elements.btnLogsPrev.addEventListener('click', () => {
+      if (currentLogsPage > 1) loadLogsList(currentLogsPage - 1);
+    });
+  }
+  if (elements.btnLogsNext) {
+    elements.btnLogsNext.addEventListener('click', () => {
+      if (currentLogsPage < totalLogsPages) loadLogsList(currentLogsPage + 1);
+    });
   }
 }
 
@@ -1251,5 +1392,92 @@ async function handleImportBackup() {
     btn.disabled = false;
     fileInput.value = ''; // Reset file input
     if (elements.selectedFileInfo) elements.selectedFileInfo.style.display = 'none';
+  }
+}
+
+// ==========================================
+// 7. LOGS MANAGEMENT LOGIC
+// ==========================================
+let currentLogsPage = 1;
+let totalLogsPages = 1;
+const logsLimit = 50;
+
+async function loadLogsList(page = 1) {
+  if (!elements.logsTbody) return;
+  elements.logsTbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">Đang tải nhật ký...</td></tr>';
+
+  try {
+    const res = await fetch(API_BASE + `/api/logs?page=${page}&limit=${logsLimit}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    const data = await res.json();
+
+    if (res.ok && data.success) {
+      currentLogsPage = data.pagination.page;
+      totalLogsPages = data.pagination.totalPages;
+
+      if (elements.logsPageInfo) {
+        elements.logsPageInfo.innerText = `Trang ${currentLogsPage} / ${totalLogsPages || 1} (Tổng: ${data.pagination.totalLogs})`;
+      }
+
+      if (elements.btnLogsPrev) elements.btnLogsPrev.disabled = currentLogsPage <= 1;
+      if (elements.btnLogsNext) elements.btnLogsNext.disabled = currentLogsPage >= totalLogsPages;
+
+      if (data.logs.length === 0) {
+        elements.logsTbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">Không có nhật ký nào.</td></tr>';
+        return;
+      }
+
+      elements.logsTbody.innerHTML = data.logs.map(log => {
+        const date = new Date(log.timestamp).toLocaleString('vi-VN');
+        let typeColor = 'var(--text-muted)';
+        if (log.type === 'SUCCESS') typeColor = 'var(--success)';
+        if (log.type === 'ERROR') typeColor = 'var(--danger)';
+        if (log.type === 'WARNING') typeColor = 'var(--warning)';
+        if (log.type === 'INFO') typeColor = 'var(--primary)';
+
+        return `
+          <tr>
+            <td style="font-size: 0.85rem; color: var(--text-muted);">${date}</td>
+            <td><span class="status-badge" style="background: rgba(255,255,255,0.1); color: white;">${escapeHtml(log.source)}</span></td>
+            <td><span style="color: ${typeColor}; font-weight: 600; font-size: 0.85rem;">${escapeHtml(log.type)}</span></td>
+            <td style="font-size: 0.9rem; word-break: break-word;">${escapeHtml(log.message)}</td>
+          </tr>
+        `;
+      }).join('');
+    } else {
+      elements.logsTbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--danger); padding: 2rem;">Lỗi: ${escapeHtml(data.message || 'Không thể tải nhật ký')}</td></tr>`;
+    }
+  } catch (error) {
+    elements.logsTbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--danger); padding: 2rem;">Lỗi kết nối: ${escapeHtml(error.message)}</td></tr>`;
+  }
+}
+
+async function handleClearLogs() {
+  if (!confirm('Bạn có chắc chắn muốn xóa TOÀN BỘ nhật ký hệ thống không? Hành động này không thể hoàn tác.')) return;
+
+  const btn = elements.clearLogsBtn;
+  const originalText = btn.innerHTML;
+  btn.innerHTML = '⏳ Đang xóa...';
+  btn.disabled = true;
+
+  try {
+    const res = await fetch(API_BASE + '/api/logs/clear', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    const data = await res.json();
+
+    if (res.ok && data.success) {
+      alert('✅ Đã xóa toàn bộ nhật ký thành công!');
+      loadLogsList(1);
+    } else {
+      alert(`Lỗi: ${data.message || 'Không thể xóa nhật ký'}`);
+    }
+  } catch (error) {
+    alert(`Lỗi kết nối: ${escapeHtml(error.message)}`);
+  } finally {
+    btn.innerHTML = originalText;
+    btn.disabled = false;
   }
 }

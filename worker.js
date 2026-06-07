@@ -42,7 +42,7 @@ export default {
 
     // ===== CRYPTO HELPERS =====
     const hashPassword = async (pw, saltHex = null) => {
-      // Nặ¿u không cósalt, tặ¡o salt mới (16 bytes)
+      // Nếu không có salt, tạo salt mới (16 bytes)
       let salt;
       if (saltHex) {
         salt = new Uint8Array(saltHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
@@ -76,7 +76,7 @@ export default {
     };
 
     const verifyPassword = async (pw, storedHash) => {
-      // Hđ trộ£ tương thích ngược với mật khẩu cũ (chỉ có SHA-256, không có dấu ':')
+      // Hỗ trợ tương thích ngược với mật khẩu cũ (chỉ có SHA-256, không có dấu ':')
       if (!storedHash.includes(':')) {
         const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pw));
         const oldHash = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -134,7 +134,7 @@ export default {
     // ===== CONFIG HELPERS =====
     const getConfig = async () => {
       const now = Date.now();
-      // 1. Độc từ Memory Cache (nhanh nhất, sống trong vòng đời của Worker instance)
+      // 1. Đọc từ Memory Cache (nhanh nhất, sống trong vòng đời của Worker instance)
       if (globalMemoryCachedConfig && (now - globalLastMemoryConfigFetch < 60000)) {
         return globalMemoryCachedConfig;
       }
@@ -151,8 +151,9 @@ export default {
         adminUsername: 'admin',
         adminPassword: 'admin123',
         jwtSecret: 'muacert_super_secret_key_2026',
-        turnstileSecret: '', // Đítặ¯t xác minh robot
+        turnstileSecret: '', // Tắt xác minh robot
         supportUrl: 'https://t.me/ipamaster',
+        udidUrl: '/udid',
         termsUrl: '/terms.html',
         privacyUrl: '/privacy.html',
         refundUrl: '/refund.html',
@@ -161,7 +162,7 @@ export default {
 
       let configString = null;
 
-      // 2. Độc từ KV (nhanh thứ hai, đồng bộ toàn cầu)
+      // 2. Đọc từ KV (nhanh thứ hai, đồng bộ toàn cầu)
       if (env.KV) {
         try {
           configString = await env.KV.get('system_config');
@@ -175,7 +176,7 @@ export default {
         const row = await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind('config').first();
         if (row && row.value) {
           configString = row.value;
-          // Lưu ngược lại vào KV để lần sau đểc nhanh hơn
+          // Lưu ngược lại vào KV để lần sau đọc nhanh hơn
           if (env.KV) {
             ctx.waitUntil(env.KV.put('system_config', configString));
           }
@@ -327,6 +328,56 @@ export default {
       }
 
       // ==========================================
+      // OTA PROFILE ROUTE
+      // ==========================================
+      if (path === '/udid' || path === '/api/ota.mobileconfig') {
+        const config = await getConfig();
+        const frontendUrl = config.frontendUrl || `https://${url.host}`;
+        
+        const mobileconfig = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>PayloadContent</key>
+    <dict>
+        <key>URL</key>
+        <string>${frontendUrl}/api/ota/enroll</string>
+        <key>DeviceAttributes</key>
+        <array>
+            <string>UDID</string>
+            <string>IMEI</string>
+            <string>ICCID</string>
+            <string>VERSION</string>
+            <string>PRODUCT</string>
+            <string>DEVICE_NAME</string>
+        </array>
+    </dict>
+    <key>PayloadOrganization</key>
+    <string>Muacert Reseller</string>
+    <key>PayloadDisplayName</key>
+    <string>Lấy UDID Thiết Bị</string>
+    <key>PayloadVersion</key>
+    <integer>1</integer>
+    <key>PayloadUUID</key>
+    <string>9CF421B3-9853-4454-BC8A-982CBD3C907C</string>
+    <key>PayloadIdentifier</key>
+    <string>com.muacert.udid</string>
+    <key>PayloadDescription</key>
+    <string>Cài đặt cấu hình này để lấy UDID thiết bị của bạn.</string>
+    <key>PayloadType</key>
+    <string>Profile Service</string>
+</dict>
+</plist>`;
+
+        return new Response(mobileconfig, {
+          headers: {
+            'Content-Type': 'application/x-apple-aspen-config',
+            'Content-Disposition': 'attachment; filename="ota.mobileconfig"'
+          }
+        });
+      }
+
+      // ==========================================
       // PUBLIC ROUTES
       // ==========================================
 
@@ -380,11 +431,7 @@ export default {
             return json({ success: false, message: 'Không tìm thấy UDID trong profile' }, 400);
           }
 
-          if (!udid) {
-            return json({ success: false, message: 'Không tìm thấy UDID trong profile' }, 400);
-          }
-
-          // Lấy tên miộn gốc của trang web để redirect vộ
+          // Lấy tên miền gốc của trang web để redirect về
           const origin = url.origin;
 
           // Redirect người dùng về trang chủ kèm theo UDID trên URL
@@ -397,7 +444,7 @@ export default {
             }
           });
         } catch (e) {
-          return json({ success: false, message: 'Lỗi xộ­ lýOTA' }, 500);
+          return json({ success: false, message: 'Lỗi xử lý OTA' }, 500);
         }
       }
 
@@ -443,10 +490,10 @@ export default {
         }
 
         saveLogToDb('USER', 'SUCCESS', `New user registered: ${username}`);
-        return json({ success: true, message: 'ĐĐăng kýthành công! Hãy đăng nhập.' });
+        return json({ success: true, message: 'Đăng ký thành công! Hãy đăng nhập.' });
       }
 
-      // ĐĐng nhập
+      // Đăng nhập
       if (path === '/api/user/login' && method === 'POST') {
         const { username, password, turnstileResponse } = await request.json();
         if (!username || !password) return json({ success: false, message: 'Thiếu thông tin' }, 400);
@@ -557,7 +604,7 @@ export default {
       // USER DEPOSIT (NẠP TIỀN)
       // ==========================================
 
-      // Tạo mã nạp tiộn
+      // Tạo mã nạp tiền
       if (path === '/api/user/deposit' && method === 'POST') {
         const auth = await getUserAuth(request);
         if (!auth) return json({ success: false, message: 'Chưa đăng nhập' }, 401);
@@ -565,7 +612,7 @@ export default {
         const { amount } = await request.json();
         const depositAmount = parseInt(amount);
         if (!depositAmount || depositAmount < 10000) {
-          return json({ success: false, message: 'Số tiộn nạp tđi thiộu 10,000đ' }, 400);
+          return json({ success: false, message: 'Số tiền nạp tối thiểu 10,000đ' }, 400);
         }
 
         const config = await getConfig();
@@ -573,7 +620,7 @@ export default {
         const bankCode = config.pay2sBankCode;
         const accountName = config.pay2sAccountName;
 
-        // Tạo mã nạp tiộn unique (random 6 ký tự)
+        // Tạo mã nạp tiền unique (random 6 ký tự)
         let depositCode = '';
         let isUnique = false;
         let attempts = 0;
@@ -683,7 +730,7 @@ export default {
       }
 
       // ==========================================
-      // PAY2S IPN WEBHOOK (XỬ LÝ NẠP TIỀN TỰ ĐđãNG)
+      // PAY2S IPN WEBHOOK (XỬ LÝ NẠP TIỀN TỰ ĐỘNG)
       // ==========================================
 
       if (path === '/api/pay2s/ipn' && method === 'POST') {
@@ -717,12 +764,12 @@ export default {
               // Lấy thông tin giao dịch để biặ¿t username
               const tx = await env.DB.prepare('SELECT username FROM transactions WHERE id = ?').bind(orderId).first();
               if (tx) {
-                // Cộng tiộn cho user
+                // Cộng tiền cho user
                 await env.DB.prepare('UPDATE users SET balance = balance + ?, total_deposited = total_deposited + ? WHERE username = ?')
                   .bind(parseInt(amount), parseInt(amount), tx.username)
                   .run();
 
-                saveLogToDb('PAY2S', 'SUCCESS', `Nạp tiộn tự đểng thành công: ${tx.username} +${amount}đ (Order: ${orderId})`);
+                saveLogToDb('PAY2S', 'SUCCESS', `Nạp tiền tự động thành công: ${tx.username} +${amount}đ (Order: ${orderId})`);
               }
             }
           }
@@ -777,7 +824,7 @@ export default {
                     .bind(parseInt(amount), parseInt(amount), tx.username)
                     .run();
 
-                  saveLogToDb('PAY2S', 'SUCCESS', `Nạp tiộn tự đểng thành công (Redirect): ${tx.username} +${amount}đ (Order: ${orderId})`);
+                  saveLogToDb('PAY2S', 'SUCCESS', `Nạp tiền tự động thành công (Redirect): ${tx.username} +${amount}đ (Order: ${orderId})`);
                 }
               }
               redirectUrl = `/?depositStatus=success&amount=${amount}&orderId=${orderId}`;
@@ -826,31 +873,31 @@ export default {
         if (user.balance < price) {
           return json({
             success: false,
-            message: `Số dư không đủ! Cần ${price.toLocaleString()}đ, hiện có${user.balance.toLocaleString()}đ. Vui lòng nạp thêm tiộn.`,
+            message: `Số dư không đủ! Cần ${price.toLocaleString()}đ, hiện có ${user.balance.toLocaleString()}đ. Vui lòng nạp thêm tiền.`,
             needDeposit: true,
             required: price,
             current: user.balance
           }, 400);
         }
 
-        // Kiểm tra UDID đãĐng ký chưa TRÆ¯ộC KHI trừ tiộn
+        // Kiểm tra UDID đã đăng ký chưa TRƯỚC KHI trừ tiền
         if (env.DB) {
-          const existing = await env.DB.prepare('SELECT * FROM devices WHERE username = ? AND LOWER(udid) = ? AND deleted_at IS NULL')
-            .bind(auth.username, udid.toLowerCase())
+          const existing = await env.DB.prepare('SELECT * FROM devices WHERE LOWER(udid) = ? AND deleted_at IS NULL')
+            .bind(udid.toLowerCase())
             .first();
           if (existing) {
-            return json({ success: false, message: 'UDID này đã được đăng ký trước đó' }, 400);
+            return json({ success: false, message: 'UDID này đã được đăng ký trên hệ thống trước đó' }, 400);
           }
         }
 
-        // Trừ tiộn trước để tránh race condition (spam request)
+        // Trừ tiền trước để tránh race condition (spam request)
         if (env.DB) {
           const updateRes = await env.DB.prepare('UPDATE users SET balance = balance - ?, total_spent = total_spent + ? WHERE username = ? AND balance >= ?')
             .bind(price, price, auth.username, price)
             .run();
             
           if (updateRes.meta.changes === 0) {
-            return json({ success: false, message: 'Số dư không đủ hoặc giao dịch đãng được xộ­ lý' }, 400);
+            return json({ success: false, message: 'Số dư không đủ hoặc giao dịch đang được xử lý' }, 400);
           }
         }
 
@@ -889,37 +936,82 @@ export default {
               regStatus = 'REGISTERED';
               saveLogToDb('PURCHASE', 'SUCCESS', `[LIVE] Registered ${udid} for ${auth.username}, Pack ${packageId}, DeviceID: ${deviceId}`);
             } else {
-              // Hoàn tiộn lại vì lỗi Muacert
-              if (env.DB) {
-                await env.DB.prepare('UPDATE users SET balance = balance + ?, total_spent = total_spent - ? WHERE username = ?')
-                  .bind(price, price, auth.username)
-                  .run();
-              }
-              saveLogToDb('PURCHASE', 'ERROR', `Muacert error: code ${data.code} - ${data.message}`);
               let errorMsg = data.message || 'Muacert API error';
-              if (errorMsg.toLowerCase().includes('insufficient balance')) {
-                errorMsg = 'Gói này đã hết hạn, liên hệ admin để được hỗ trợ';
+              
+              // Nếu lỗi là do UDID đã tồn tại trên Muacert, ta vẫn coi như thành công và trừ tiền
+              if (errorMsg.toLowerCase().includes('already exists') || errorMsg.toLowerCase().includes('đã tồn tại') || errorMsg.toLowerCase().includes('exist') || data.code === 1003) {
+                // Lấy danh sách thiết bị từ Muacert để tìm ID của thiết bị này
+                try {
+                  const searchRes = await fetch(`https://muacert.com/openapi/v1/devices?udid=${udid}`, {
+                    headers: { 'Authorization': `Bearer ${config.muacertToken}` }
+                  });
+                  const searchData = await searchRes.json();
+                  if (searchData.code === 0 && searchData.data?.devicesList?.length > 0) {
+                    const foundDevice = searchData.data.devicesList.find(d => d.attributes?.udid?.toLowerCase() === udid.toLowerCase());
+                    if (foundDevice) {
+                      deviceId = foundDevice.id;
+                      regStatus = 'REGISTERED';
+                      saveLogToDb('PURCHASE', 'SUCCESS', `[LIVE] Re-linked existing ${udid} for ${auth.username}, Pack ${packageId}, DeviceID: ${deviceId}`);
+                    }
+                  }
+                } catch (searchErr) {
+                  console.error('Failed to search existing device:', searchErr);
+                }
+                
+                // Nếu không tìm được ID từ Muacert, tạo ID ảo để vẫn lưu vào DB
+                if (!deviceId) {
+                  deviceId = 'relinked_' + Math.random().toString(36).substring(2, 10);
+                  regStatus = 'REGISTERED';
+                }
+              } else {
+                // Các lỗi khác (như hết tiền) thì hoàn tiền lại
+                if (env.DB) {
+                  await env.DB.prepare('UPDATE users SET balance = balance + ?, total_spent = total_spent - ? WHERE username = ?')
+                    .bind(price, price, auth.username)
+                    .run();
+                }
+                saveLogToDb('PURCHASE', 'ERROR', `Muacert error: code ${data.code} - ${data.message}`);
+                if (errorMsg.toLowerCase().includes('insufficient balance')) {
+                  errorMsg = 'Gói này đã hết hạn, liên hệ admin để được hỗ trợ';
+                }
+                return json({ success: false, message: `Lỗi đăng ký: ${errorMsg}` }, 400);
               }
-              return json({ success: false, message: `Lỗi đĐăng ký: ${errorMsg}` }, 400);
             }
           } catch (e) {
-            // Hoàn tiộn lại vì lỗi kết nối
+            // Hoàn tiền lại vì lỗi kết nối
             if (env.DB) {
               await env.DB.prepare('UPDATE users SET balance = balance + ?, total_spent = total_spent - ? WHERE username = ?')
                 .bind(price, price, auth.username)
                 .run();
             }
             saveLogToDb('PURCHASE', 'ERROR', `Muacert API call failed: ${e.message}`);
-            return json({ success: false, message: 'Lỗi kết nối Muacert. Tiộn đã được hoàn lại, vui lòng thử lại.' }, 500);
+            return json({ success: false, message: 'Lỗi kết nối Muacert. Tiền đã được hoàn lại, vui lòng thử lại.' }, 500);
           }
         }
 
         // Lưu vào DB
         if (env.DB) {
           // 1. Lưu thiết bị
-          await env.DB.prepare('INSERT OR REPLACE INTO devices (id, username, udid, name, model, package_id, status, registered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-            .bind(deviceId, auth.username, udid, name || 'iOS Device', model || 'iPhone', parseInt(packageId), regStatus, new Date().toISOString())
-            .run();
+          // Để cho phép nhiều user cùng thấy 1 thiết bị, ta cần lưu mỗi giao dịch mua thành 1 bản ghi riêng.
+          // Vì id từ Muacert là duy nhất cho 1 thiết bị, nếu ta dùng id này làm PRIMARY KEY, bản ghi của user cũ sẽ bị ghi đè.
+          // Do đó, ta tạo một ID nội bộ (localDeviceId) bằng cách ghép deviceId và username.
+          
+          const localDeviceId = deviceId + '_' + auth.username;
+          
+          // Kiểm tra xem user này đã mua thiết bị này chưa
+          const existingDeviceForUser = await env.DB.prepare('SELECT * FROM devices WHERE udid = ? AND username = ? AND deleted_at IS NULL').bind(udid, auth.username).first();
+          
+          if (existingDeviceForUser) {
+             // Nếu user này đã mua rồi, cập nhật lại
+             await env.DB.prepare('UPDATE devices SET id = ?, name = ?, model = ?, package_id = ?, status = ?, registered_at = ? WHERE udid = ? AND username = ?')
+               .bind(localDeviceId, name || 'iOS Device', model || 'iPhone', parseInt(packageId), regStatus, new Date().toISOString(), udid, auth.username)
+               .run();
+          } else {
+             // Nếu user này chưa mua, chèn bản ghi mới với localDeviceId
+             await env.DB.prepare('INSERT INTO devices (id, username, udid, name, model, package_id, status, registered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+               .bind(localDeviceId, auth.username, udid, name || 'iOS Device', model || 'iPhone', parseInt(packageId), regStatus, new Date().toISOString())
+               .run();
+          }
 
           // 2. Lưu giao dịch
           const txId = 'BUY' + Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -939,7 +1031,7 @@ export default {
 
         return json({
           success: true,
-          message: `ĐĐăng kýthành công! Đítrừ ${price.toLocaleString()}đ`,
+          message: `Đăng ký thành công! Đã trừ ${price.toLocaleString()}đ`,
           balance: currentBalance,
           deviceId,
           udid
@@ -947,7 +1039,7 @@ export default {
       }
 
       // ==========================================
-      // USER DEVICES (THIẾT BỊ ĐđĐđNG Kđ)
+      // USER DEVICES (THIẾT BỊ ĐÃ ĐĂNG KÝ)
       // ==========================================
 
       if (path === '/api/user/devices' && method === 'GET') {
@@ -998,7 +1090,7 @@ export default {
         return json({ success: true, deletedDevices });
       }
 
-      // User: Khôi phục thiết bị từ Đđãđã gần đây
+      // User: Khôi phục thiết bị từ Đã xóa gần đây
       
       // User: Tđi cert zip cóa thiít bị(Cđãerify ownership)
       if (path.startsWith('/api/user/devices/') && path.endsWith('/provision') && method === 'GET') {
@@ -1022,7 +1114,11 @@ export default {
           return json({ code: -1, message: 'Chđã cóu hđãh Token Muacert' }, 400);
         }
 
-        const targetUrl = 'https://muacert.com/openapi/v1/devices/' + deviceId + '/provision';
+        // Vì id trong DB bây giờ có thể là localDeviceId (ví dụ: 7a4f780dfaac944d_username),
+        // ta cần tách lấy phần ID thực sự của Muacert (phần trước dấu _)
+        const realMuacertDeviceId = deviceId.split('_')[0];
+
+        const targetUrl = 'https://muacert.com/openapi/v1/devices/' + realMuacertDeviceId + '/provision';
         const urlParams = url.search;
 
         try {
@@ -1032,8 +1128,29 @@ export default {
           });
 
           const proxyRes = await fetch(proxyReq);
+          
+          // Nếu Muacert trả về lỗi (không phải 200 OK), trả về nguyên lỗi đó
+          if (!proxyRes.ok) {
+             const errorText = await proxyRes.text();
+             console.log("Muacert API Error:", proxyRes.status, errorText);
+             return new Response(errorText, {
+               status: proxyRes.status,
+               headers: {
+                 'Content-Type': 'application/json',
+                 'Access-Control-Allow-Origin': '*'
+               }
+             });
+          }
+
           const newHeaders = new Headers(proxyRes.headers);
           newHeaders.set('Access-Control-Allow-Origin', '*');
+          
+          // Đảm bảo trả về đúng Content-Type cho file zip
+          const contentType = proxyRes.headers.get('Content-Type') || '';
+          if (contentType.includes('application/zip') || contentType.includes('application/octet-stream') || contentType.includes('application/x-zip-compressed')) {
+            newHeaders.set('Content-Type', 'application/zip');
+            newHeaders.set('Content-Disposition', `attachment; filename="cert.zip"`);
+          }
 
           return new Response(proxyRes.body, {
             status: proxyRes.status,
@@ -1068,7 +1185,7 @@ export default {
         }
       }
 
-      // User: Xóa thiết bị của chính mình (Chuyển vào Đđãđã gần đây)
+      // User: Xóa thiết bị của chính mình (Chuyển vào Đã xóa gần đây)
       if (path.startsWith('/api/user/devices/') && method === 'DELETE') {
         const auth = await getUserAuth(request);
         if (!auth) return json({ success: false, message: 'Chưa đăng nhập' }, 401);
@@ -1086,11 +1203,11 @@ export default {
         }
 
         saveLogToDb('USER', 'SUCCESS', `User ${auth.username} moved device ${deviceId} to deletedDevices`);
-        return json({ success: true, message: 'Đã chuyển thiết bị vào mục Đđãđã gần đây' });
+        return json({ success: true, message: 'Đã chuyển thiết bị vào mục Đã xóa gần đây' });
       }
 
       // ==========================================
-      // PAY2S WEBHOOK (NẠP TIỀN TỰ ĐđãNG)
+      // PAY2S WEBHOOK (NẠP TIỀN TỰ ĐỘNG)
       // ==========================================
 
       if (path === '/api/pay2s/webhook' && method === 'POST') {
@@ -1134,7 +1251,7 @@ export default {
           }
         }
 
-        // Tìm mã nạp tiộn dạng NAPxxxxxx (NAP + 6 ký tự) trong nội dung chuyộn khoản
+        // Tìm mã nạp tiền dạng NAPxxxxxx (NAP + 6 ký tự) trong nội dung chuyển khoản
         const napMatch = content.toUpperCase().match(/NAP[A-Z0-9]{6}/);
 
         let parsedUsername = '';
@@ -1327,7 +1444,7 @@ export default {
           const updated = { ...config, ...safeConfig };
           await saveConfig(updated);
           saveLogToDb('ADMIN', 'SUCCESS', 'Updated system configuration');
-          return json({ success: true, message: 'Đđãưu cấu hình thành công!' });
+          return json({ success: true, message: 'Đã lưu cấu hình thành công!' });
         }
       }
 
@@ -1537,7 +1654,7 @@ export default {
         });
       }
 
-      // Admin: Đđ"i mật khẩu user
+      // Admin: Đổi mật khẩu user
       if (path.startsWith('/api/admin/users/') && path.endsWith('/change-password') && method === 'POST') {
         if (!await getAdminAuth(request)) return json({ success: false, message: 'Unauthorized' }, 401);
         const targetUsername = path.replace('/api/admin/users/', '').replace('/change-password', '');
@@ -1558,7 +1675,7 @@ export default {
         }
 
         saveLogToDb('ADMIN', 'SUCCESS', `Admin changed password for user: ${targetUsername}`);
-        return json({ success: true, message: 'Đđãđ"i mật khẩu thành công!' });
+        return json({ success: true, message: 'Đã đổi mật khẩu thành công!' });
       }
 
       // Admin: Khđã/Mđã khóa user
@@ -1748,8 +1865,9 @@ export default {
         }
 
         if (env.DB) {
+          const localDeviceId = deviceId + '_' + username.toLowerCase();
           await env.DB.prepare('INSERT OR REPLACE INTO devices (id, username, udid, name, model, package_id, status, registered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-            .bind(deviceId, username.toLowerCase(), udid, name || 'iOS Device', model || 'iPhone', parseInt(packageId), regStatus, new Date().toISOString())
+            .bind(localDeviceId, username.toLowerCase(), udid, name || 'iOS Device', model || 'iPhone', parseInt(packageId), regStatus, new Date().toISOString())
             .run();
         }
 
@@ -1795,15 +1913,35 @@ export default {
 
             const stmts = [];
             for (const dev of devices) {
-              const existing = await env.DB.prepare('SELECT id FROM devices WHERE id = ? OR udid = ?').bind(dev.id, dev.attributes?.udid || '').first();
+              const udid = dev.attributes?.udid || '';
+              if (!udid) continue;
+
+              // Tìm xem UDID này đã có trong database chưa (của bất kỳ user nào)
+              const existingDevices = await env.DB.prepare('SELECT * FROM devices WHERE udid = ?').bind(udid).all();
               
-              if (!existing) {
+              if (existingDevices.results && existingDevices.results.length > 0) {
+                // Nếu đã có trong DB, ta cập nhật lại ID chuẩn từ Muacert cho TẤT CẢ các user đang sở hữu UDID này
+                for (const existingDev of existingDevices.results) {
+                  const correctLocalDeviceId = dev.id + '_' + existingDev.username;
+                  
+                  // Nếu ID hiện tại khác với ID chuẩn, ta cập nhật lại
+                  if (existingDev.id !== correctLocalDeviceId) {
+                    stmts.push(
+                      env.DB.prepare('UPDATE devices SET id = ?, status = ? WHERE id = ?')
+                        .bind(correctLocalDeviceId, 'REGISTERED', existingDev.id)
+                    );
+                    syncedCount++;
+                  }
+                }
+              } else {
+                // Nếu chưa có ai sở hữu UDID này trong DB, ta gán nó cho admin
+                const localDeviceId = dev.id + '_' + defaultUser;
                 stmts.push(
                   env.DB.prepare('INSERT INTO devices (id, username, udid, name, model, package_id, status, registered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
                     .bind(
-                      dev.id, 
+                      localDeviceId, 
                       defaultUser, 
-                      dev.attributes?.udid || '', 
+                      udid, 
                       dev.attributes?.name || 'Synced Device', 
                       dev.attributes?.model || 'Unknown', 
                       dev.package || 3, 
@@ -1919,6 +2057,54 @@ export default {
       }
 
       // ==========================================
+      // ADMIN STATS ROUTE (Thống kê doanh thu)
+      // ==========================================
+      if (path === '/api/admin/stats' && method === 'GET') {
+        if (!await getAdminAuth(request)) return json({ success: false, message: 'Unauthorized' }, 401);
+        
+        if (!env.DB) return json({ success: false, message: 'Database not configured' }, 500);
+
+        try {
+          // Lấy thống kê 30 ngày gần nhất
+          const query = `
+            SELECT 
+              date(created_at) as date,
+              SUM(CASE WHEN type = 'deposit' THEN amount ELSE 0 END) as total_deposit,
+              SUM(CASE WHEN type = 'purchase' THEN ABS(amount) ELSE 0 END) as total_purchase
+            FROM transactions
+            WHERE created_at >= date('now', '-30 days')
+            GROUP BY date(created_at)
+            ORDER BY date(created_at) ASC
+          `;
+          
+          const { results } = await env.DB.prepare(query).all();
+          
+          // Lấy tổng quan
+          const overviewQuery = `
+            SELECT 
+              (SELECT COUNT(*) FROM users) as total_users,
+              (SELECT COUNT(*) FROM devices WHERE deleted_at IS NULL) as total_devices,
+              (SELECT SUM(amount) FROM transactions WHERE type = 'deposit') as total_revenue
+          `;
+          const overview = await env.DB.prepare(overviewQuery).first();
+
+          return json({ 
+            success: true, 
+            data: {
+              chart: results,
+              overview: {
+                users: overview.total_users || 0,
+                devices: overview.total_devices || 0,
+                revenue: overview.total_revenue || 0
+              }
+            } 
+          });
+        } catch (e) {
+          return json({ success: false, message: e.message }, 500);
+        }
+      }
+
+      // ==========================================
       // MUACERT PROXY ROUTES (Admin only)
       // ==========================================
       if (path.startsWith('/api/devices')) {
@@ -1929,7 +2115,16 @@ export default {
           return json({ code: -1, message: 'Chưa cấu hình Token Muacert' }, 400);
         }
 
-        const targetUrl = 'https://muacert.com/openapi/v1' + path.replace('/api/devices', '/devices');
+        // Xử lý path để lấy đúng ID của Muacert (bỏ phần _username nếu có)
+        let targetPath = path.replace('/api/devices', '/devices');
+        const pathParts = targetPath.split('/');
+        // pathParts sẽ có dạng: ["", "devices", "deviceId", "provision"]
+        if (pathParts.length > 2) {
+           pathParts[2] = pathParts[2].split('_')[0];
+           targetPath = pathParts.join('/');
+        }
+
+        const targetUrl = 'https://muacert.com/openapi/v1' + targetPath;
         const urlParams = url.search; // Lấy query string (như ?udid=...)
 
         try {
@@ -1942,8 +2137,29 @@ export default {
           });
 
           const proxyRes = await fetch(proxyReq);
+          
+          // Nếu Muacert trả về lỗi (không phải 200 OK), trả về nguyên lỗi đó
+          if (!proxyRes.ok) {
+             const errorText = await proxyRes.text();
+             console.log("Muacert API Error (Admin):", proxyRes.status, errorText);
+             return new Response(errorText, {
+               status: proxyRes.status,
+               headers: {
+                 'Content-Type': 'application/json',
+                 'Access-Control-Allow-Origin': '*'
+               }
+             });
+          }
+
           const newHeaders = new Headers(proxyRes.headers);
           newHeaders.set('Access-Control-Allow-Origin', '*');
+          
+          // Đảm bảo trả về đúng Content-Type cho file zip
+          const contentType = proxyRes.headers.get('Content-Type') || '';
+          if (contentType.includes('application/zip') || contentType.includes('application/octet-stream') || contentType.includes('application/x-zip-compressed')) {
+            newHeaders.set('Content-Type', 'application/zip');
+            newHeaders.set('Content-Disposition', `attachment; filename="cert.zip"`);
+          }
 
           return new Response(proxyRes.body, {
             status: proxyRes.status,
